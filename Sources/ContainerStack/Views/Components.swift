@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 // MARK: - Status indicators
@@ -5,21 +6,121 @@ import SwiftUI
 struct StatusDot: View {
     let color: Color
     var pulsing = false
-    @State private var pulse = false
 
     var body: some View {
         Circle()
             .fill(color)
             .frame(width: 9, height: 9)
-            .overlay {
-                if pulsing {
-                    Circle()
-                        .stroke(color.opacity(pulse ? 0 : 0.55), lineWidth: 3)
-                        .scaleEffect(pulse ? 2.0 : 1.0)
-                        .animation(.easeOut(duration: 1.4).repeatForever(autoreverses: false), value: pulse)
-                }
-            }
-            .onAppear { pulse = true }
+            // ImageRenderer (the --snapshot harness) can't draw
+            // AppKit-backed views and substitutes a placeholder for the whole
+            // dot, so headless renders get the plain dot instead.
+            .overlay { if pulsing && !SnapshotDriver.isHarnessRun { PulseRing(color: color) } }
+    }
+}
+
+/// The ring that pulses out of a running container's status dot.
+///
+/// It rides on a CALayer rather than a SwiftUI `repeatForever` animation.
+/// SwiftUI drives an animation by ticking the view graph every frame on the
+/// main thread, and each tick pulled a full window layout pass with it — with
+/// one dot per running container that measured ~30% CPU, whether or not
+/// anything had changed. CoreAnimation runs this on the render server, so an
+/// idle window with any number of dots costs nothing per frame.
+private struct PulseRing: NSViewRepresentable {
+    let color: Color
+
+    func makeNSView(context: Context) -> PulseRingView { PulseRingView() }
+
+    func updateNSView(_ view: PulseRingView, context: Context) {
+        view.tint = NSColor(color)
+    }
+}
+
+/// The ring's motion: expand to twice the dot and fade out, forever.
+///
+/// Deliberately not a member of `PulseRingView`: that is an NSView, so its
+/// statics inherit @MainActor, and the headless selftest calls this from a task
+/// while the main thread is blocked waiting for that task to finish.
+enum PulseAnimation {
+    static let duration: CFTimeInterval = 1.4
+
+    static func make() -> CAAnimationGroup {
+        let ease = CAMediaTimingFunction(name: .easeOut)
+        let scale = CABasicAnimation(keyPath: "transform.scale")
+        scale.fromValue = 1.0
+        scale.toValue = 2.0
+        let fade = CABasicAnimation(keyPath: "opacity")
+        fade.fromValue = 1.0
+        fade.toValue = 0.0
+        let pulse = CAAnimationGroup()
+        pulse.animations = [scale, fade]
+        for animation in pulse.animations ?? [] {
+            animation.duration = duration
+            animation.timingFunction = ease
+        }
+        pulse.duration = duration
+        pulse.repeatCount = .infinity
+        pulse.timingFunction = ease
+        return pulse
+    }
+}
+
+final class PulseRingView: NSView {
+    private let ring = CALayer()
+
+    var tint: NSColor = .clear {
+        didSet { guard tint != oldValue else { return }; applyTint() }
+    }
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.masksToBounds = false
+        ring.masksToBounds = false
+        ring.borderWidth = 3
+        // Steady state is invisible: if the animation is ever removed (leaving
+        // the window, say) the ring should vanish, not freeze mid-pulse.
+        ring.opacity = 0
+        layer?.addSublayer(ring)
+        startPulsing()
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    override func layout() {
+        super.layout()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        // The stroke straddles the dot's edge, as the SwiftUI version's
+        // centered 3pt line did.
+        ring.frame = bounds.insetBy(dx: -1.5, dy: -1.5)
+        ring.cornerRadius = ring.frame.width / 2
+        CATransaction.commit()
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        applyTint()
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        // Layer animations are dropped when the view leaves a window.
+        if window == nil { ring.removeAnimation(forKey: "pulse") } else { startPulsing() }
+    }
+
+    private func applyTint() {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            ring.borderColor = tint.withAlphaComponent(0.55).cgColor
+        }
+    }
+
+    private func startPulsing() {
+        guard ring.animation(forKey: "pulse") == nil else { return }
+        // Respect the system setting: a decorative loop is exactly what Reduce
+        // Motion is asking about.
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
+        ring.add(PulseAnimation.make(), forKey: "pulse")
     }
 }
 

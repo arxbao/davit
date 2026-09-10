@@ -3117,6 +3117,20 @@ enum SelfTest {
             }
         }
 
+        await step("status dot: the pulse ring loops on a layer, not the view graph") {
+            // A SwiftUI repeatForever animation here ticked the view graph every
+            // frame, one dot per running container, and cost ~30% CPU. The ring
+            // must stay a CoreAnimation loop: infinite, 1.4s, scale + fade.
+            let pulse = PulseAnimation.make()
+            guard pulse.repeatCount == .infinity, pulse.duration == PulseAnimation.duration else {
+                throw CLIError(command: "selftest", message: "pulse is not an endless 1.4s loop")
+            }
+            let keyPaths = (pulse.animations ?? []).compactMap { ($0 as? CABasicAnimation)?.keyPath }
+            guard Set(keyPaths) == ["transform.scale", "opacity"] else {
+                throw CLIError(command: "selftest", message: "pulse animates \(keyPaths), expected scale + opacity")
+            }
+        }
+
         await step("stop reason: live OOM kill is detected from the boot log") {
             let name = "davit-selftest-oom"
             try? await ContainerService.delete(name, force: true)
