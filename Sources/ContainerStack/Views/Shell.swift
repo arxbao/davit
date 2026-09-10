@@ -27,12 +27,20 @@ enum SidebarSection: String, Hashable, CaseIterable {
 
 struct MainWindow: View {
     @EnvironmentObject var state: AppState
+    @ObservedObject private var presence = WindowPresence.shared
     @Environment(\.openSettings) private var openSettings
     @State private var selection: SidebarSection? = .dashboard
 
     var body: some View {
         Group {
-            if state.cliMissing {
+            if !presence.hasVisibleWindow && !SnapshotDriver.isHarnessRun {
+                // Closing the window doesn't tear this scene down, so without
+                // this the whole UI stays live: every poll re-renders it and
+                // AppKit lays out a window nobody is looking at. Dropping the
+                // content leaves the scene (and the menu bar) intact and costs
+                // one rebuild when a window comes back.
+                Color.clear
+            } else if state.cliMissing {
                 OnboardingView()
             } else {
                 NavigationSplitView {

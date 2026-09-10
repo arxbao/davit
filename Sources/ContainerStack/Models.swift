@@ -397,6 +397,17 @@ struct StatsSample: Identifiable, Hashable {
     }
 }
 
+extension Array where Element == StatsSample {
+    /// Evenly thins the series to at most `limit` points, always keeping the
+    /// oldest and newest. Every point costs a chart mark (and its layout), so
+    /// plotting more samples than the plot has pixels is pure overhead.
+    func decimated(to limit: Int) -> [StatsSample] {
+        guard limit > 1, count > limit else { return self }
+        let step = Double(count - 1) / Double(limit - 1)
+        return (0..<limit).map { self[Int((Double($0) * step).rounded())] }
+    }
+}
+
 // MARK: - System
 
 struct DiskUsage: Hashable {

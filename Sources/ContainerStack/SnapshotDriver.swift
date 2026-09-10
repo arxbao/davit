@@ -6,6 +6,13 @@ import AppKit
 /// waits for live data, renders each major screen via ImageRenderer (no
 /// screen-recording permission needed), writes PNGs, then quits.
 enum SnapshotDriver {
+    /// True in the headless verification modes (`--snapshot`, `--probe`,
+    /// `--pose`), which render or drive the UI with no one at the screen —
+    /// anything gated on a visible window has to keep running for them.
+    static let isHarnessRun: Bool = ProcessInfo.processInfo.arguments.contains {
+        $0.hasPrefix("--snapshot") || $0.hasPrefix("--probe") || $0.hasPrefix("--pose")
+    }
+
     static var outputDir: String? {
         let args = ProcessInfo.processInfo.arguments
         guard let i = args.firstIndex(of: "--snapshot"), i + 1 < args.count else { return nil }

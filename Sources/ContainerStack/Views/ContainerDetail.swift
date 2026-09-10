@@ -486,64 +486,84 @@ struct ContainerStatsTab: View {
                                  subtitle: "running")
                     }
 
-                    DetailCard(title: "CPU Usage", icon: "cpu") {
-                        Chart(history) { sample in
-                            LineMark(x: .value("Time", sample.time), y: .value("CPU %", sample.cpuPercent))
-                                .interpolationMethod(.monotone)
-                            AreaMark(x: .value("Time", sample.time), y: .value("CPU %", sample.cpuPercent))
-                                .interpolationMethod(.monotone)
-                                .foregroundStyle(.linearGradient(
-                                    colors: [.accentColor.opacity(0.25), .clear],
-                                    startPoint: .top, endPoint: .bottom))
-                        }
-                        .chartYAxisLabel("%")
-                        .chartYScale(domain: 0...max(10, (history.map(\.cpuPercent).max() ?? 10) * 1.2))
-                        .frame(height: 160)
-                    }
-
-                    DetailCard(title: "Memory Usage", icon: "memorychip") {
-                        Chart(history) { sample in
-                            LineMark(x: .value("Time", sample.time),
-                                     y: .value("MB", Double(sample.memoryBytes) / 1_048_576))
-                                .interpolationMethod(.monotone)
-                                .foregroundStyle(.purple)
-                            AreaMark(x: .value("Time", sample.time),
-                                     y: .value("MB", Double(sample.memoryBytes) / 1_048_576))
-                                .interpolationMethod(.monotone)
-                                .foregroundStyle(.linearGradient(
-                                    colors: [.purple.opacity(0.25), .clear],
-                                    startPoint: .top, endPoint: .bottom))
-                        }
-                        .chartYAxisLabel("MB")
-                        .frame(height: 160)
-                    }
-
-                    DetailCard(title: "Disk I/O", icon: "internaldrive") {
-                        Chart {
-                            ForEach(history) { sample in
-                                LineMark(x: .value("Time", sample.time),
-                                         y: .value("KB/s", sample.diskReadRate / 1024),
-                                         series: .value("dir", "Read"))
-                                    .foregroundStyle(.orange)
-                                    .interpolationMethod(.monotone)
-                                LineMark(x: .value("Time", sample.time),
-                                         y: .value("KB/s", sample.diskWriteRate / 1024),
-                                         series: .value("dir", "Write"))
-                                    .foregroundStyle(.teal)
-                                    .interpolationMethod(.monotone)
-                            }
-                        }
-                        .chartForegroundStyleScale(["Read": Color.orange, "Write": Color.teal])
-                        .chartYAxisLabel("KB/s")
-                        // Explicit floor so an idle container draws flat zero
-                        // lines instead of an empty-looking plot.
-                        .chartYScale(domain: 0...max(
-                            10,
-                            (history.map { max($0.diskReadRate, $0.diskWriteRate) }.max() ?? 0) / 1024 * 1.2))
-                        .frame(height: 160)
-                    }
+                    DetailCard(title: "CPU Usage", icon: "cpu") { cpuChart }
+                    DetailCard(title: "Memory Usage", icon: "memorychip") { memoryChart }
+                    DetailCard(title: "Disk I/O", icon: "internaldrive") { diskChart }
                 }
                 .padding(16)
+    }
+
+    /// Each chart styles its `ForEach` rather than the marks inside it: applied
+    /// per sample, a gradient and stroke style get built for every point in the
+    /// history on each 2s stats tick.
+    private var cpuChart: some View {
+        Chart {
+            ForEach(history) { sample in
+                LineMark(x: .value("Time", sample.time), y: .value("CPU %", sample.cpuPercent))
+            }
+            .interpolationMethod(.monotone)
+
+            ForEach(history) { sample in
+                AreaMark(x: .value("Time", sample.time), y: .value("CPU %", sample.cpuPercent))
+            }
+            .interpolationMethod(.monotone)
+            .foregroundStyle(.linearGradient(
+                colors: [.accentColor.opacity(0.25), .clear],
+                startPoint: .top, endPoint: .bottom))
+        }
+        .chartYAxisLabel("%")
+        .chartYScale(domain: 0...max(10, (history.map(\.cpuPercent).max() ?? 10) * 1.2))
+        .frame(height: 160)
+    }
+
+    private var memoryChart: some View {
+        Chart {
+            ForEach(history) { sample in
+                LineMark(x: .value("Time", sample.time),
+                         y: .value("MB", Double(sample.memoryBytes) / 1_048_576))
+            }
+            .interpolationMethod(.monotone)
+            .foregroundStyle(.purple)
+
+            ForEach(history) { sample in
+                AreaMark(x: .value("Time", sample.time),
+                         y: .value("MB", Double(sample.memoryBytes) / 1_048_576))
+            }
+            .interpolationMethod(.monotone)
+            .foregroundStyle(.linearGradient(
+                colors: [.purple.opacity(0.25), .clear],
+                startPoint: .top, endPoint: .bottom))
+        }
+        .chartYAxisLabel("MB")
+        .frame(height: 160)
+    }
+
+    private var diskChart: some View {
+        Chart {
+            ForEach(history) { sample in
+                LineMark(x: .value("Time", sample.time),
+                         y: .value("KB/s", sample.diskReadRate / 1024),
+                         series: .value("dir", "Read"))
+            }
+            .foregroundStyle(.orange)
+            .interpolationMethod(.monotone)
+
+            ForEach(history) { sample in
+                LineMark(x: .value("Time", sample.time),
+                         y: .value("KB/s", sample.diskWriteRate / 1024),
+                         series: .value("dir", "Write"))
+            }
+            .foregroundStyle(.teal)
+            .interpolationMethod(.monotone)
+        }
+        .chartForegroundStyleScale(["Read": Color.orange, "Write": Color.teal])
+        .chartYAxisLabel("KB/s")
+        // Explicit floor so an idle container draws flat zero lines instead of
+        // an empty-looking plot.
+        .chartYScale(domain: 0...max(
+            10,
+            (history.map { max($0.diskReadRate, $0.diskWriteRate) }.max() ?? 0) / 1024 * 1.2))
+        .frame(height: 160)
     }
 
     /// Compact per-second rate label, e.g. "1.2 MB/s".

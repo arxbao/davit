@@ -115,8 +115,19 @@ final class AppState: ObservableObject {
             }
         }
         statsTask = Task { [weak self] in
+            var hiddenSince: Date?
             while !Task.isCancelled {
-                await self?.refreshStats()
+                if self?.chartsAreOnScreen == false {
+                    if hiddenSince == nil { hiddenSince = Date() }
+                } else {
+                    // Interpolating a chart across a long hole draws a straight
+                    // line that never happened, so start the series over.
+                    if let since = hiddenSince, Date().timeIntervalSince(since) > 30 {
+                        self?.clearStatsHistory()
+                    }
+                    hiddenSince = nil
+                    await self?.refreshStats()
+                }
                 try? await Task.sleep(for: .seconds(2))
             }
         }
@@ -125,6 +136,26 @@ final class AppState: ObservableObject {
     func stopPolling() {
         pollTask?.cancel()
         statsTask?.cancel()
+    }
+
+    /// The 2s stats poll feeds only the live charts (the dashboard aggregate
+    /// and container/machine detail). With no window on screen nobody can see
+    /// those samples, so the poll is pure XPC traffic and pointless publishes;
+    /// `WindowPresence` drops the window's content in the same state, which is
+    /// where the CPU saving actually comes from. The menu bar reads
+    /// `systemState` and `runningContainers` only, both fed by the separate
+    /// `refreshAll` loop, so pausing stats while hidden costs nothing visible.
+    private var chartsAreOnScreen: Bool {
+        // Headless verification runs drive the UI with no one at the screen.
+        SnapshotDriver.isHarnessRun || WindowPresence.shared.hasVisibleWindow
+    }
+
+    /// Drops sampled history so the charts restart from "Collecting stats…"
+    /// instead of bridging a gap. Clearing `lastRawStats` too keeps the first
+    /// sample after the gap from reporting an average over the whole pause.
+    private func clearStatsHistory() {
+        statsHistory = [:]
+        lastRawStats = [:]
     }
 
     // MARK: Auto-start

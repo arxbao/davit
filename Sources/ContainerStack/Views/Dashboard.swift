@@ -183,7 +183,7 @@ struct DashboardView: View {
 
             let series: [(id: String, samples: [StatsSample])] = state.runningContainers.compactMap { c in
                 guard let h = state.statsHistory[c.id], h.count > 1 else { return nil }
-                return (c.id, h)
+                return (c.id, h.decimated(to: Self.pointsPerSeries))
             }
             if series.isEmpty {
                 Text("Collecting stats…").font(.callout).foregroundStyle(.secondary)
@@ -192,33 +192,7 @@ struct DashboardView: View {
                 let colors = ids.indices.map { Self.seriesPalette[$0 % Self.seriesPalette.count] }
                 Chart {
                     ForEach(Array(series.enumerated()), id: \.element.id) { idx, entry in
-                        let color = Self.seriesPalette[idx % Self.seriesPalette.count]
-                        ForEach(entry.samples) { s in
-                            // Gradient fill under each container's line, matching the
-                            // per-container Stats charts' look.
-                            AreaMark(
-                                x: .value("Time", s.time),
-                                y: .value(aggMetric.rawValue, aggMetric.value(s)),
-                                series: .value("Container", entry.id),
-                                // Each container's fill goes 0 -> its own value so
-                                // the line tops its area; without this AreaMarks
-                                // stack (fill sits above the line) while LineMarks
-                                // don't, which mismatches them.
-                                stacking: .unstacked
-                            )
-                            .interpolationMethod(.monotone)
-                            .foregroundStyle(.linearGradient(
-                                colors: [color.opacity(0.28), color.opacity(0.02)],
-                                startPoint: .top, endPoint: .bottom))
-                            LineMark(
-                                x: .value("Time", s.time),
-                                y: .value(aggMetric.rawValue, aggMetric.value(s)),
-                                series: .value("Container", entry.id)
-                            )
-                            .foregroundStyle(by: .value("Container", entry.id))
-                            .interpolationMethod(.monotone)
-                            .lineStyle(StrokeStyle(lineWidth: 2))
-                        }
+                        marks(for: entry, color: Self.seriesPalette[idx % Self.seriesPalette.count])
                     }
                 }
                 .chartForegroundStyleScale(domain: ids, range: colors)
@@ -228,9 +202,52 @@ struct DashboardView: View {
         }
     }
 
+    /// One container's line and its gradient fill.
+    ///
+    /// The styling hangs off each `ForEach` rather than off the marks inside
+    /// it: applied per sample, every point allocates its own gradient and
+    /// stroke style, and with a handful of containers that dominated the
+    /// dashboard's layout cost.
+    @ChartContentBuilder
+    private func marks(for entry: (id: String, samples: [StatsSample]), color: Color) -> some ChartContent {
+        // Gradient fill under each container's line, matching the
+        // per-container Stats charts' look.
+        ForEach(entry.samples) { s in
+            AreaMark(
+                x: .value("Time", s.time),
+                y: .value(aggMetric.rawValue, aggMetric.value(s)),
+                series: .value("Container", entry.id),
+                // Each container's fill goes 0 -> its own value so the line
+                // tops its area; without this AreaMarks stack (fill sits above
+                // the line) while LineMarks don't, which mismatches them.
+                stacking: .unstacked
+            )
+        }
+        .interpolationMethod(.monotone)
+        .foregroundStyle(.linearGradient(
+            colors: [color.opacity(0.28), color.opacity(0.02)],
+            startPoint: .top, endPoint: .bottom))
+
+        ForEach(entry.samples) { s in
+            LineMark(
+                x: .value("Time", s.time),
+                y: .value(aggMetric.rawValue, aggMetric.value(s)),
+                series: .value("Container", entry.id)
+            )
+        }
+        .foregroundStyle(by: .value("Container", entry.id))
+        .interpolationMethod(.monotone)
+        .lineStyle(StrokeStyle(lineWidth: 2))
+    }
+
     /// Distinct per-container series colors; index 0 (blue) matches the CPU accent
     /// so a single-container chart reads like the per-container Stats chart.
     static let seriesPalette: [Color] = [.blue, .purple, .green, .orange, .pink, .teal, .indigo, .red]
+
+    /// Points drawn per container. The card is 180pt tall and under 900pt wide,
+    /// so the full 150-sample history is finer than the plot can show — and it
+    /// is drawn once per running container on every 2s stats tick.
+    static let pointsPerSeries = 60
 }
 
 /// Split out of DashboardView.diskCard: the combined expression exceeded the

@@ -1,12 +1,25 @@
 import SwiftUI
 
-/// Switches the app between a regular app (Dock icon, ⌘Tab) while a window is
-/// open and a menu-bar-only accessory when the last window closes — the
-/// standard behavior for menu-bar utilities (unless the user opts out).
+/// Tracks whether any main window is on screen.
+///
+/// Two things hang off that. The visible one: the app switches between a
+/// regular app (Dock icon, ⌘Tab) while a window is open and a menu-bar-only
+/// accessory when the last one closes — standard behavior for a menu-bar
+/// utility, unless the user opts out. The invisible one: a closed window keeps
+/// its SwiftUI tree alive, so every poll re-renders and AppKit re-lays out the
+/// whole dashboard for an audience of nobody (measurably ~30% CPU with a few
+/// containers running). `MainWindow` drops its content while this is false and
+/// `AppState` pauses the stats poll.
 @MainActor
-final class DockVisibility {
-    static let shared = DockVisibility()
+final class WindowPresence: ObservableObject {
+    static let shared = WindowPresence()
+    @Published private(set) var hasVisibleWindow = true
     private var observers: [NSObjectProtocol] = []
+    /// Set once the scene's window has actually appeared. Before that the app
+    /// stays optimistic: at launch an activation notification can land while
+    /// the window is still being made, and treating that as "no window" hides
+    /// the content and drops the app to accessory before it ever shows one.
+    private var sawWindow = false
 
     var keepInDock: Bool {
         UserDefaults.standard.bool(forKey: "keepInDock")
@@ -14,30 +27,38 @@ final class DockVisibility {
 
     func start() {
         guard observers.isEmpty else { return }
-        observers.append(NotificationCenter.default.addObserver(
-            forName: NSWindow.willCloseNotification, object: nil, queue: .main
-        ) { note in
-            let closing = note.object as? NSWindow
-            Task { @MainActor in
-                guard !DockVisibility.shared.keepInDock else { return }
-                let remaining = NSApp.windows.filter {
-                    $0 !== closing && $0.isVisible && $0.canBecomeMain
-                }
-                if remaining.isEmpty {
-                    NSApp.setActivationPolicy(.accessory)
-                }
-            }
-        })
-        observers.append(NotificationCenter.default.addObserver(
-            forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main
-        ) { note in
-            let window = note.object as? NSWindow
-            Task { @MainActor in
-                if window?.canBecomeMain == true, NSApp.activationPolicy() != .regular {
-                    NSApp.setActivationPolicy(.regular)
-                }
-            }
-        })
+        let events: [Notification.Name] = [
+            NSWindow.willCloseNotification,
+            NSWindow.didBecomeKeyNotification,
+            NSWindow.didMiniaturizeNotification,
+            NSWindow.didDeminiaturizeNotification,
+            NSApplication.didHideNotification,
+            NSApplication.didUnhideNotification,
+            NSApplication.didBecomeActiveNotification,
+        ]
+        for event in events {
+            observers.append(NotificationCenter.default.addObserver(
+                forName: event, object: nil, queue: .main
+            ) { note in
+                // willClose fires while the window is still listed as visible.
+                let closing = note.name == NSWindow.willCloseNotification ? note.object as? NSWindow : nil
+                Task { @MainActor in WindowPresence.shared.update(ignoring: closing) }
+            })
+        }
+    }
+
+    private func update(ignoring closing: NSWindow?) {
+        let visible = NSApp.windows.contains {
+            $0 !== closing && $0.canBecomeMain && $0.isVisible && !$0.isMiniaturized
+        }
+        if visible { sawWindow = true }
+        guard sawWindow else { return }
+        if hasVisibleWindow != visible { hasVisibleWindow = visible }
+        if visible {
+            if NSApp.activationPolicy() != .regular { NSApp.setActivationPolicy(.regular) }
+        } else if !keepInDock {
+            NSApp.setActivationPolicy(.accessory)
+        }
     }
 }
 
@@ -52,7 +73,7 @@ struct ContainerStackApp: App {
                 .environmentObject(state)
                 .frame(minWidth: 940, minHeight: 560)
                 .task {
-                    DockVisibility.shared.start()
+                    WindowPresence.shared.start()
                     state.startPolling()
                 }
                 // Deep links: davit://container/<id> opens that container's
@@ -111,8 +132,7 @@ struct MenuBarIcon: View {
         Image(nsImage: Self.templateImage)
             .renderingMode(.template)
             .task {
-                let args = ProcessInfo.processInfo.arguments
-                guard args.contains(where: { $0.hasPrefix("--snapshot") || $0.hasPrefix("--probe") || $0.hasPrefix("--pose") }) else { return }
+                guard SnapshotDriver.isHarnessRun else { return }
                 try? await Task.sleep(for: .seconds(2))
                 if !NSApp.windows.contains(where: { $0.isVisible && $0.canBecomeMain }) {
                     FileHandle.standardError.write(Data("harness: window missing after launch, forcing open\n".utf8))
