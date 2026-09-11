@@ -1,0 +1,12 @@
+# Pinning actions to full commit SHAs stops the code running next to our release
+# secrets from changing without a commit here. The cost is that the pins go stale
+# silently, so Dependabot keeps them moving: it opens a PR per action update with
+# the new SHA and the version in the comment.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "ci"
