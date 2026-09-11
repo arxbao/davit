@@ -8,15 +8,19 @@ on:
 permissions:
   contents: write
 
+# Only booleans here. A secret declared at workflow level is readable by
+# EVERY step, including `swift build` (SwiftPM plugins run arbitrary code) and
+# every third-party action. These flags carry the same gating information with
+# none of the exposure; the values themselves are attached to the single step
+# that consumes each one.
 env:
-  # Presence of the cert secret switches the whole pipeline to Developer ID
-  # signing + notarization; without it, builds are ad-hoc signed.
-  MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
-  # Presence of this token enables the Homebrew tap bump after release.
-  TAP_PUSH_TOKEN: ${{ secrets.TAP_PUSH_TOKEN }}
-  # Presence of this key (a service account scoped to the davit-app bucket)
-  # enables publishing the update appcast to davit.app after release.
-  GCS_SA_KEY: ${{ secrets.GCS_SA_KEY }}
+  # Switches the pipeline to Developer ID signing + notarization; without it,
+  # builds are ad-hoc signed.
+  HAS_SIGNING: ${{ secrets.MACOS_CERT_P12 != '' }}
+  # Enables the Homebrew tap bump after release.
+  HAS_TAP: ${{ secrets.TAP_PUSH_TOKEN != '' }}
+  # Enables publishing the update appcast to davit.app after release.
+  HAS_GCS: ${{ secrets.GCS_SA_KEY != '' }}
 
 jobs:
   release:
@@ -43,8 +47,9 @@ jobs:
           restore-keys: spm-${{ runner.os }}-
 
       - name: Import signing certificate
-        if: env.MACOS_CERT_P12 != ''
+        if: env.HAS_SIGNING == 'true'
         env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
           MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
         run: |
           KEYCHAIN_PWD=$(uuidgen)
@@ -71,7 +76,7 @@ jobs:
           scripts/bundle.sh
 
       - name: Notarize
-        if: env.MACOS_CERT_P12 != ''
+        if: env.HAS_SIGNING == 'true'
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -126,12 +131,12 @@ jobs:
           brew install create-dmg || echo "create-dmg unavailable — plain hdiutil layout"
           VERSION="${GITHUB_REF_NAME#v}"
           scripts/make-dmg.sh dist/Davit.app "Davit-${VERSION}.dmg"
-          if [ -n "$MACOS_CERT_P12" ]; then
+          if [ "$HAS_SIGNING" = "true" ]; then
             codesign --force --timestamp -s "$CODESIGN_IDENTITY" "Davit-${VERSION}.dmg"
           fi
 
       - name: Notarize DMG
-        if: env.MACOS_CERT_P12 != ''
+        if: env.HAS_SIGNING == 'true'
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -145,7 +150,7 @@ jobs:
 
       - name: Write release notes
         run: |
-          if [ -n "$MACOS_CERT_P12" ]; then
+          if [ "$HAS_SIGNING" = "true" ]; then
             cat > RELEASE_NOTES.md <<'NOTES'
           ## Install
 
@@ -189,17 +194,17 @@ jobs:
       # macOS runners have no Google Cloud SDK; these two actions provide
       # credentials + gsutil for the appcast upload.
       - name: Authenticate to GCS
-        if: env.GCS_SA_KEY != ''
+        if: env.HAS_GCS == 'true'
         uses: google-github-actions/auth@v3
         with:
           credentials_json: ${{ secrets.GCS_SA_KEY }}
 
       - name: Set up gcloud
-        if: env.GCS_SA_KEY != ''
+        if: env.HAS_GCS == 'true'
         uses: google-github-actions/setup-gcloud@v3
 
       - name: Publish appcast to davit.app
-        if: env.GCS_SA_KEY != ''
+        if: env.HAS_GCS == 'true'
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           cat > appcast.json <<EOF
@@ -212,7 +217,9 @@ jobs:
           gsutil -h "Cache-Control:no-cache" cp appcast.json gs://davit-app/appcast.json
 
       - name: Bump Homebrew tap
-        if: env.TAP_PUSH_TOKEN != ''
+        if: env.HAS_TAP == 'true'
+        env:
+          TAP_PUSH_TOKEN: ${{ secrets.TAP_PUSH_TOKEN }}
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           SHA=$(cut -d' ' -f1 "Davit-${VERSION}.zip.sha256")
